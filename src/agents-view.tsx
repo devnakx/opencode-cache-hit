@@ -63,32 +63,37 @@ export function AgentsView(props: {
         />
       </Show>
       <For each={m.subs()}>
-        {(sub) => (
-          <Show when={subHasActivity(sub)}>
-            <TuiMetricRow
-              pal={m.pal()}
-              layout={layout}
-              label={
-                "  " +
-                formatSubAgentLabel(sub, layout.gauge(), props.formatCost, m.t().tok)
-              }
-              value={sub.cost > 0 ? props.formatCost(sub.cost) : formatTokenCount(sub.input)}
-              unit={sub.cost > 0 ? "" : m.t().tok}
-              labelFg={modelRowColor(sub.model, sub.providerID, m.pal())}
-              valueFg={m.pal().muted}
-            />
-            <Show when={sub.speed !== undefined}>
-              <TuiMetricRow
-                pal={m.pal()}
-                layout={layout}
-                label="    "
-                value={props.formatSpeed(sub.speed)}
-                fg={m.pal().muted}
-              />
+          {(sub) => (
+            <Show when={subHasActivity(sub)}>
+              {/* opentui 重新插入多 span text 时高度误算为 2，用 height=1 的 box 钳制 */}
+              <box height={1}>
+                <TuiMetricRow
+                  pal={m.pal()}
+                  layout={layout}
+                  label={formatSubAgentLabel(sub, layout.gauge(), props.formatCost, m.t().tok)}
+                  value={sub.cost > 0 ? props.formatCost(sub.cost) : formatTokenCount(sub.input)}
+                  unit={sub.cost > 0 ? "" : m.t().tok}
+                  labelFg={modelRowColor(sub.model, sub.providerID, m.pal())}
+                  valueFg={m.pal().muted}
+                />
+              </box>
+              <Show
+                // NaN 视为无效 speed（会话无有效计时样本时可能产生）
+                when={typeof sub.speed === "number" && Number.isFinite(sub.speed)}
+              >
+                <box height={1}>
+                  <TuiMetricRow
+                    pal={m.pal()}
+                    layout={layout}
+                    label="    "
+                    value={props.formatSpeed(sub.speed as number)}
+                    fg={m.pal().muted}
+                  />
+                </box>
+              </Show>
             </Show>
-          </Show>
-        )}
-      </For>
+          )}
+        </For>
     </>
   )
 }

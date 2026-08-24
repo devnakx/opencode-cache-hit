@@ -121,7 +121,7 @@ export function TuiSection(props: {
           {sepAfterPrefix(prefix(), props.layout.gauge())}
         </span>
       </text>
-      <Show when={props.open}>{props.children}</Show>
+      <box visible={props.open}>{props.children}</box>
     </>
   )
 }
@@ -152,7 +152,7 @@ export function TuiMetricRow(props: {
     const labelColor = props.labelFg ?? props.fg ?? props.pal.muted
     const valueColor = props.valueFg ?? props.fg ?? props.pal.muted
     return (
-      <text>
+      <text height={1} wrapMode="none">
         <span style={{ fg: labelColor }}>{props.label}</span>
         {" ".repeat(gap)}
         <span style={{ fg: valueColor }}>
@@ -163,7 +163,7 @@ export function TuiMetricRow(props: {
     )
   }
   return (
-    <text fg={props.fg ?? props.pal.muted}>
+    <text height={1} wrapMode="none" fg={props.fg ?? props.pal.muted}>
       {props.layout.row(props.label, props.value, unit)}
     </text>
   )
