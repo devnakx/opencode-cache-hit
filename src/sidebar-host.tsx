@@ -1,5 +1,5 @@
 /** @jsxImportSource @opentui/solid */
-import { createSignal, createMemo, createEffect, onCleanup } from "solid-js"
+import { createSignal, createMemo, createEffect, onCleanup, untrack } from "solid-js"
 import { CacheHitSidebar } from "./widget.tsx"
 import type { DisplayConfig, TimelineConfig, CacheTTLConfig, DynamicPricingConfig } from "./plugin-config.ts"
 import { isToolSummaryEnabled } from "./plugin-config.ts"
@@ -17,6 +17,7 @@ import type {
   OpenCodeTuiApi,
   SubAgentSummary,
 } from "./types.ts"
+import { loadSessionMessages, type SessionMessageLoadStatus } from "./session-messages.ts"
 import {
   emptySessionSnapshot,
   aggregateFromSessionObject,
@@ -44,7 +45,7 @@ import {
  * (not capped at 100 messages). This method was added in opencode#26644
  * (2026-05-12) — forks that split earlier (e.g. MiMo-Code) lack it.
  * When absent, the code falls back to session.messages(), which is limited
- * to the most recent 100 assistant messages per call.
+ * to the most recent 100 messages per call.
  *
  * Timeline writes are event-driven: message.updated → handleMessage → appendFile.
  */
@@ -62,6 +63,10 @@ export function CacheHitSidebarHost(props: {
   const [refreshTick, setRefreshTick] = createSignal(0)
   const [childIds, setChildIds] = createSignal<string[]>([])
   const [childEntries, setChildEntries] = createSignal<SessionListEntry[]>([])
+  const [historyMessages, setHistoryMessages] = createSignal<AssistantMessage[]>([])
+  const [historyStatus, setHistoryStatus] = createSignal<SessionMessageLoadStatus>("complete")
+  const pendingHistoryUpdates = new Map<string, AssistantMessage>()
+  let historyLoadGeneration = 0
 
   /** Re-read cache-hit.config.json when parent session changes (picks up edits without full plugin reload). */
   const runtimeConfig = createMemo(() => {
@@ -132,6 +137,42 @@ export function CacheHitSidebarHost(props: {
     if (!sid) return [] as AssistantMessage[]
     return (props.api.state.session.messages(sid) ?? []) as AssistantMessage[]
   })
+
+  const mergeHistoryMessage = (messages: readonly AssistantMessage[], update: AssistantMessage) => {
+    const id = update.id ?? update.messageID
+    const next = [...messages]
+    const index = id ? next.findIndex((message) => (message.id ?? message.messageID) === id) : -1
+    if (index >= 0) next[index] = update
+    else next.push(update)
+    next.sort((a, b) => (a.time?.created ?? 0) - (b.time?.created ?? 0))
+    return next
+  }
+
+  const loadHistory = (sid: string) => {
+    const generation = ++historyLoadGeneration
+    pendingHistoryUpdates.clear()
+    const mirror = untrack(mainMessages)
+    setHistoryMessages(mirror)
+    // Reset to "complete" so a session switch does not carry over the previous
+    // session's "capped"/"unavailable" status (which would flash the hint until
+    // the new load settles). The real status is set when the request completes.
+    setHistoryStatus("complete")
+    if (!sid) return
+    void loadSessionMessages({
+      client: props.api.client.session,
+      sessionId: sid,
+      directory: props.api.state.path.directory,
+      fallback: mirror,
+    }).then((result) => {
+      if (generation !== historyLoadGeneration) return
+      let merged = result.messages
+      for (const update of pendingHistoryUpdates.values()) {
+        merged = mergeHistoryMessage(merged, update)
+      }
+      setHistoryMessages(merged)
+      setHistoryStatus(result.status)
+    })
+  }
 
   const subAgentList = createMemo(() => {
     void refreshTick()
@@ -234,6 +275,7 @@ export function CacheHitSidebarHost(props: {
     itlTracker.reset()
     streamingTickState = initialStreamingTickState()
     setStreamingNow({ phase: "idle", speed: 0 })
+    loadHistory(sid)
     if (sid) {
       childSync.loadChildren()
     }
@@ -249,6 +291,10 @@ export function CacheHitSidebarHost(props: {
         seedTtftFromParts(msg)
       }
       if (sid && msg) {
+        if (sid === props.sessionId && msg.role === "assistant") {
+          pendingHistoryUpdates.set(msg.id ?? msg.messageID ?? String(msg.time?.created ?? Date.now()), msg)
+          setHistoryMessages((messages) => mergeHistoryMessage(messages, msg))
+        }
         timeline.handleMessage(sid, msg)
       }
     })
@@ -304,6 +350,8 @@ export function CacheHitSidebarHost(props: {
       cacheTTL={cacheTTL()}
       dynamicPricing={dynamicPricing()}
       messages={mainMessages}
+      metricMessages={() => historyMessages()}
+      metricMessageStatus={() => historyStatus()}
       main={mainSnap}
       subAgents={subAgentList}
       providers={() => props.api.state.provider ?? []}

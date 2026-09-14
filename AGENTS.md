@@ -29,6 +29,7 @@ OpenCode TUI sidebar plugin: **cache hit rate**, **tokens**, **cost**, with **su
 ```bash
 bun test          # full unit + module-load smoke
 bun run check     # same as test
+bun run build     # emit dist/tui.js (the published ./tui entry)
 ```
 
 After moving or renaming exports: run full `bun test`; `tests/module-load.test.ts` imports the real consumer graph.
@@ -41,7 +42,7 @@ After moving or renaming exports: run full `bun test`; `tests/module-load.test.t
 - **`PLUGIN_ROOT`** in `load-config.ts` is `fileURLToPath(new URL("..", import.meta.url))` — do **not** wrap with an extra `dirname` (breaks config path).
 - **Sub-agent ids**: only from `session.list` overwrite in `child-session-sync.ts`; do not append via `session.get`.
 - **Agents UI totals**: child sessions only; main session excluded by design (see design doc).
-- **Eager-safe JSX**: this plugin ships raw TSX; npm installs land under `node_modules`, where opencode/opentui skip the Solid transform (see [opencode#39986](https://github.com/anomalyco/opencode/issues/39986)), so bun's generic JSX compiles `<Show>`/`<For>` children eagerly — accessing a guard variable's property inside children can throw on `undefined` before `when`/`each` runs. Never `!`-assert a guard variable in control-flow children; use `?.`/`??`, bind a local accessor, or accept `| undefined` in child props. Guard against `tests/eager-safe-jsx.test.ts`.
+- **Eager-safe JSX**: the published `./tui` entry is a pre-transformed bundle ([docs/adr/0001](docs/adr/0001-prebundled-tui-entry.md)), but `bun test` and the `"."` / `"./tui-panel"` exports still load raw TSX, which bun compiles with generic JSX: `<Show>`/`<For>` children are evaluated eagerly, so accessing a guard variable's property inside children can throw on `undefined` before `when`/`each` runs. Never `!`-assert a guard variable in control-flow children; use `?.`/`??`, bind a local accessor, or accept `| undefined` in child props. Guard against `tests/eager-safe-jsx.test.ts`.
 - Comments only for non-obvious behavior.
 
 ## Configuration
@@ -54,13 +55,14 @@ After moving or renaming exports: run full `bun test`; `tests/module-load.test.t
 
 ## npm publish
 
-- Tarball = `package.json` `"files"` only (source TSX, example config, docs — no `tests/`, `logs/`, user config).
-- No build step required for OpenCode `./tui` entry (`index.tsx`).
+- Tarball = `package.json` `"files"` only (bundled TUI entry, source TSX, example config, docs — no `tests/`, `logs/`, user config).
+- `exports["./tui"]` → `./dist/tui.js`, emitted by `bun run build` ([scripts/build-tui.ts](scripts/build-tui.ts)); `prepack` rebuilds it. `dist/` is gitignored but published — never commit it, and rebuild before testing the local file plugin.
+- Keep `packages: "external"` in the build: opencode supplies one reactive runtime. Inlining `solid-js` / `@opentui/solid` breaks folding silently ([docs/adr/0001](docs/adr/0001-prebundled-tui-entry.md)).
 - Run `bun test` before `npm publish`; see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## OpenCode integration
 
-- Entry: [index.tsx](index.tsx) → [src/plugin.tsx](src/plugin.tsx).
+- Entry: [index.tsx](index.tsx) → [src/plugin.tsx](src/plugin.tsx), built to `dist/tui.js` for `exports["./tui"]`.
 - Slot: `sidebar_content`, `order: 56` (near visual-cache).
 - Peers: `@opencode-ai/plugin`, `@opencode-ai/sdk`, `@opentui/solid`, `solid-js` (see [package.json](package.json)).
 

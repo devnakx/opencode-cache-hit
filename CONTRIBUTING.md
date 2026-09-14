@@ -52,14 +52,22 @@ Follow [Semantic Versioning](https://semver.org/):
 
 Default changes (rate, paths) accompanied by new features → minor. Pure bugfixes only → patch.
 
-## Publishing to npm
+## Building and publishing to npm
 
-Published **as source** (TypeScript / TSX)—**no `dist/` build**. OpenCode loads `index.tsx` via the `./tui` export (same pattern as many TUI plugins).
+The published `./tui` entry is a **pre-transformed bundle**, `dist/tui.js` (`bun run build` → [scripts/build-tui.ts](scripts/build-tui.ts)). It has to be: opencode loads plugin TUI modules from `node_modules`, where OpenTUI's Solid transform is skipped, so raw TSX runs as generic JSX and mouse folding silently does nothing ([docs/adr/0001](docs/adr/0001-prebundled-tui-entry.md), [opencode#39986](https://github.com/anomalyco/opencode/issues/39986)).
+
+```bash
+bun run build   # writes dist/tui.js; also runs on `bun install` (prepare) and before npm packs (prepack)
+```
+
+Keep `packages: "external"` in the build config: opencode resolves `solid-js` / `@opentui/solid` to its own runtime modules, and inlining them creates a second runtime whose signals never repaint the host renderer.
 
 **Tarball contents** — `package.json` → `"files"`:
 
-- `index.tsx`, `src/`, docs, `cache-hit.config.example.json`, READMEs, `AGENTS.md`, `CONTRIBUTING.md`
+- `dist/tui.js` (the `./tui` entry), `index.tsx`, `src/`, docs, `scripts/`, `cache-hit.config.example.json`, READMEs, `AGENTS.md`, `CONTRIBUTING.md`, `CONTEXT.md`, `LICENSE`
 - Not included: `tests/`, `logs/`, personal `cache-hit.config.json`, `node_modules/`
+- `dist/` is gitignored: it is built into the tarball, not committed.
+- Verify the shipped shape before publishing: `bun pm pack --dry-run` (runs `prepack`, lists the tarball without writing it).
 
 **npmjs.com page**
 
@@ -80,7 +88,7 @@ git tag vX.Y.Z && git push origin vX.Y.Z
 
 Pushing a `v*` tag triggers [.github/workflows/publish.yml](.github/workflows/publish.yml): it runs `bun test`, then `npm publish --provenance --access public` (requires the `NPM_TOKEN` repo secret; provenance uses the workflow's OIDC `id-token: write` permission). Check the result with `gh run list --workflow=publish.yml`.
 
-[opencode-visual-cache](https://www.npmjs.com/package/opencode-visual-cache) ships a `dist/` for its main export but still exposes `./tui` → source; we follow the source-only TUI entry for now.
+[opencode-visual-cache](https://www.npmjs.com/package/opencode-visual-cache) pre-bundles its `./tui` entry the same way (esbuild + `esbuild-plugin-solid`); `@mtayfur/opencode-cache-view` uses `@opentui/solid/bun-plugin`, like this repo.
 
 ## Pull requests
 
