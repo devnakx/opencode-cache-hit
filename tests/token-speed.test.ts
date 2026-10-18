@@ -324,6 +324,75 @@ describe("advanceStreamingNow", () => {
     expect(r.speed).toBe(2)
   })
 
+  test("falls back to message content when part() carries no text (V2)", () => {
+    // The V2 adapter reconstructs part timing only; the store keeps the
+    // accumulated text on the message itself.
+    const timingOnly = (id: string) => (id === "m1" ? [{ type: "text", time: { start: 0 } }] : undefined)
+    const r = advanceStreamingNow(initialStreamingTickState(), {
+      messages: [
+        {
+          role: "assistant",
+          id: "m1",
+          time: { created: 0 },
+          content: [{ type: "text", text: "abcdefgh" }],
+        },
+      ],
+      part: timingOnly,
+      now: 1000,
+    })
+    expect(r.phase).toBe("active")
+    expect(r.speed).toBe(2)
+  })
+
+  test("message content still works when part() is unavailable", () => {
+    const r = advanceStreamingNow(initialStreamingTickState(), {
+      messages: [
+        {
+          role: "assistant",
+          id: "m1",
+          time: { created: 0 },
+          content: [{ type: "text", text: "abcdefgh" }],
+        },
+      ],
+      now: 1000,
+    })
+    expect(r.phase).toBe("active")
+    expect(r.speed).toBe(2)
+  })
+
+  test("part() text wins over message content when both are present", () => {
+    const r = advanceStreamingNow(initialStreamingTickState(), {
+      messages: [
+        {
+          role: "assistant",
+          id: "m1",
+          time: { created: 0 },
+          content: [{ type: "text", text: "abcdefghijkl" }],
+        },
+      ],
+      part,
+      now: 1000,
+    })
+    expect(r.speed).toBe(2)
+  })
+
+  test("stays warmup when neither source carries text", () => {
+    const r = advanceStreamingNow(initialStreamingTickState(), {
+      messages: [
+        {
+          role: "assistant",
+          id: "m1",
+          time: { created: 0 },
+          content: [{ type: "tool" }],
+        },
+      ],
+      part: (id) => (id === "m1" ? [{ type: "text" }] : undefined),
+      now: 1000,
+    })
+    expect(r.phase).toBe("warmup")
+    expect(r.speed).toBe(0)
+  })
+
   test("holds last speed briefly after stream ends", () => {
     const active = advanceStreamingNow(initialStreamingTickState(), {
       messages: [{ role: "assistant", id: "m1", time: { created: 0 } }],

@@ -71,6 +71,13 @@ export type AssistantMessage = {
     reasoning?: number
     cache?: { read?: number; write?: number }
   }
+  /**
+   * In-flight content parts carrying the accumulated stream text.
+   *
+   * V1 hands that text over through `api.state.part(id)`. The V2 adapter only
+   * reconstructs part *timing*, so live token speed reads it from here instead.
+   */
+  content?: ReadonlyArray<{ type: string; text?: string }>
 }
 
 export type ModelCost = {

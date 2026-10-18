@@ -5,6 +5,11 @@
 import type { AssistantMessage, ModelCost, ProviderInfo, SessionObject, StreamPart } from "../types.ts"
 import type { V2ContentPart, V2Message, V2Model, V2ModelCostTier, V2Provider, V2Session } from "./types.ts"
 
+/** Content parts are loosely typed upstream; keep only the text-bearing fields. */
+function toContentEntry(part: V2ContentPart): { type: string; text?: string } {
+  return { type: part.type, text: typeof part.text === "string" ? part.text : undefined }
+}
+
 /** V2 keeps role in `type` and embeds model ids; V1 reads flat fields. */
 export function toAssistantMessage(row: V2Message, sessionID?: string): AssistantMessage & { sessionID?: string } {
   return {
@@ -19,6 +24,10 @@ export function toAssistantMessage(row: V2Message, sessionID?: string): Assistan
     summary: row.type === "compaction" ? true : undefined,
     finish: row.finish,
     time: row.time,
+    // The store accumulates streaming text onto the message itself, so this is
+    // the only place live token speed can read it: `state.part()` carries
+    // timing only.
+    content: row.content?.map(toContentEntry),
     tokens: row.tokens
       ? {
           input: row.tokens.input,

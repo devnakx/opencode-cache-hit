@@ -35,6 +35,29 @@ describe("V2 → V1 shape mapping", () => {
     expect(message.summary).toBeUndefined()
   })
 
+  // Live token speed has no other source on V2: `state.part()` only carries
+  // timing, so dropping `content` here pinned Speed.Now to "—" forever.
+  test("assistant message keeps content text for live token speed", () => {
+    const r = toAssistantMessage({
+      ...assistant(),
+      content: [
+        { type: "text", text: "hello" },
+        { type: "tool", id: "call_1", name: "bash", state: { status: "running" } },
+        { type: "reasoning" },
+      ],
+    })
+    expect(r.content).toEqual([
+      { type: "text", text: "hello" },
+      { type: "tool", text: undefined },
+      { type: "reasoning", text: undefined },
+    ])
+  })
+
+  test("messages without content leave the field undefined", () => {
+    const { content: _omitted, ...withoutContent } = assistant()
+    expect(toAssistantMessage(withoutContent).content).toBeUndefined()
+  })
+
   test("compaction messages carry the V1 summary flag so they stay unpriced", () => {
     expect(toAssistantMessage(assistant({ type: "compaction" })).summary).toBe(true)
     expect(toAssistantMessage(assistant({ type: "user" })).role).toBe("user")

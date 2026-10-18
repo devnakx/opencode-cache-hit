@@ -30,7 +30,7 @@ TPOT = generationMs / (output_tokens + reasoning_tokens - 1)
 
 ### 实时流式速度
 
-流式传输期间的实时速度估算，使用 char/4 启发式。内部以 tok/s 计算，显示时转换为 ms/tok（`1000 / speed`）。需要 `api.state.part(id)` 访问流式文本内容。
+流式传输期间的实时速度估算，使用 char/4 启发式。内部以 tok/s 计算，显示时转换为 ms/tok（`1000 / speed`）。流式文本优先取自 `api.state.part(id)`；当 parts 不带文本时回退到消息自身的 `content` —— OpenCode 2 始终属于后者，因为适配器只重建了 part 的时序。
 
 **实时** 行状态：
 
@@ -130,7 +130,7 @@ TPOT = generationMs / (output_tokens + reasoning_tokens - 1)
 
 | 风险 | 影响 | 缓解 |
 |------|------|------|
-| `api.state.part()` 不可用 | **实时** 无法估算（warmup / `·`） | **最近/平均** 仍用真 token；见 [TTFT 故障排除](./ttft-troubleshooting.md) |
+| `api.state.part()` 不带文本 | **实时** 无法估算（warmup / `·`） | 回退读取消息自身的 `content`。**最近/平均** 仍用真 token；见 [TTFT 故障排除](./ttft-troubleshooting.md) |
 | 插件 SDK 字段缺失 | 部分指标为空 | 可选链；缺数据行用 `"—"`（非 **实时** 空闲） |
 | 极短已完成轮次 | **最近/平均** 显示 `—` | `generationMs < 500` 时 `computeTokenTpotMs` 返回 undefined |
 | 单 token 输出 | TPOT 未定义 | 返回 `undefined` → 显示 `—` |

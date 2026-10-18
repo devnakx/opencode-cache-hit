@@ -58,21 +58,39 @@ function inFlightAssistant(messages: AssistantMessage[]): AssistantMessage | und
   return last
 }
 
+type TextPart = { type: string; text?: string }
+
+function collectText(parts: ReadonlyArray<TextPart>): string {
+  return parts
+    .filter((p) => STREAM_PART_TYPES.has(p.type))
+    .map((p) => p.text ?? "")
+    .join("")
+}
+
+/**
+ * V1's `api.state.part()` carries the accumulated stream text. The V2 adapter
+ * only reconstructs part timing there, so fall back to the content the store
+ * keeps on the message itself.
+ */
+function streamText(msg: AssistantMessage, messageId: string, part: ((id: string) => ReadonlyArray<TextPart> | undefined) | undefined): string {
+  if (part) {
+    const fromParts = collectText(part(messageId) ?? [])
+    if (fromParts) return fromParts
+  }
+  return collectText(msg.content ?? [])
+}
+
 function measureInFlightSpeed(
   msg: AssistantMessage,
-  part: ((id: string) => ReadonlyArray<{ type: string; text?: string }> | undefined) | undefined,
+  part: ((id: string) => ReadonlyArray<TextPart> | undefined) | undefined,
   now: number,
   firstPartTime?: ReadonlyMap<string, number>,
 ): number {
   const messageId = msg.id ?? msg.messageID
   const created = msg.time?.created
-  if (!messageId || typeof created !== "number" || !part) return 0
-  const parts = part(messageId)
-  if (!parts?.length) return 0
-  const text = parts
-    .filter((p) => STREAM_PART_TYPES.has(p.type))
-    .map((p) => p.text ?? "")
-    .join("")
+  if (!messageId || typeof created !== "number") return 0
+  const text = streamText(msg, messageId, part)
+  if (!text) return 0
   const firstTime = firstPartTime?.get(messageId)
   return estimateStreamingSpeed(text, created, now, firstTime)
 }
@@ -81,7 +99,7 @@ export function advanceStreamingNow(
   prev: StreamingTickState,
   input: {
     messages: AssistantMessage[]
-    part?: (id: string) => ReadonlyArray<{ type: string; text?: string }> | undefined
+    part?: (id: string) => ReadonlyArray<TextPart> | undefined
     now: number
     firstPartTime?: ReadonlyMap<string, number>
   },

@@ -30,7 +30,7 @@ The `-1` excludes the first token (captured separately by TTFT). When `firstPart
 
 ### Real-time streaming speed
 
-Live speed estimation during streaming using char/4 heuristic. Internally computed as tok/s, then converted to ms/tok (`1000 / speed`) for display. Requires `api.state.part(id)` to access streaming text content.
+Live speed estimation during streaming using char/4 heuristic. Internally computed as tok/s, then converted to ms/tok (`1000 / speed`) for display. Streaming text is read from `api.state.part(id)`, falling back to the in-flight message's own `content` when the parts carry no text — which is always the case on OpenCode 2, where the adapter reconstructs part timing only.
 
 **Now** row states:
 
@@ -130,7 +130,7 @@ Placement: between **Detail** and **Model** sections.
 
 | Risk | Impact | Mitigation |
 |------|--------|------------|
-| `api.state.part()` unavailable | **Now** cannot estimate (warmup / `·`) | **Last** / **Avg** still use real tokens; see [TTFT troubleshooting](./ttft-troubleshooting.md) |
+| `api.state.part()` carries no text | **Now** cannot estimate (warmup / `·`) | Falls back to the in-flight message's own `content`. **Last** / **Avg** still use real tokens; see [TTFT troubleshooting](./ttft-troubleshooting.md) |
 | Missing plugin SDK fields | Some metrics empty | Optional chaining; missing rows show `"—"` (not **Now** idle) |
 | Very short completed turns | **Last** / **Avg** show `—` | `computeTokenTpotMs` returns undefined when `generationMs < 500` |
 | Single-token output | TPOT undefined | Returns `undefined` → displays `—` |
