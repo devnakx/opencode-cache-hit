@@ -8,6 +8,14 @@
  *  - `ctx.data.session.message.list()` is a cache read; `sync()` fills it
  *  - `ctx.data.location.{provider,model}.list()` are reactive store reads
  *  - events are `{type, created, data}`, not V1's `{properties}`
+ *
+ * Re-verified against 2.0.32: `exports["./tui"]` is not the only loader path.
+ * A directory under `plugins/` is discovered as a plugin source and its
+ * `index.tsx` is activated with `role=server`, bypassing `exports["."]`.
+ * That server context carries only server capabilities (app/location/agent/
+ * tool/...) and has no `data`/`ui`/`theme`, so `setup` must guard on
+ * `isTuiContext` before touching it — otherwise activation throws and the TUI
+ * loader drops the plugin because its status never reaches "active".
  * See docs/en/design.md § Version support.
  */
 import type { AssistantMessage, OpenCodeTuiApi, ProviderInfo, StreamPart } from "../types.ts"
@@ -18,6 +26,17 @@ type V1Event = { properties?: Record<string, unknown> }
 type Handler = (event: V1Event) => void
 
 export type V2Api = OpenCodeTuiApi & { dispose: () => void }
+
+/**
+ * V2 activates a plugin with either the TUI context (has `data`/`ui`/`theme`) or
+ * a server context (app/location/agent/tool/... only). Only the former can back
+ * the sidebar, so callers must gate on this before reading `ctx.data`.
+ */
+export function isTuiContext(ctx: unknown): ctx is V2Context {
+  if (typeof ctx !== "object" || ctx === null) return false
+  const candidate = ctx as Partial<V2Context>
+  return typeof candidate.data === "object" && candidate.data !== null && typeof candidate.ui === "object" && candidate.ui !== null
+}
 
 export function createV2Api(ctx: V2Context): V2Api {
   const location = ctx.location ?? { directory: "" }

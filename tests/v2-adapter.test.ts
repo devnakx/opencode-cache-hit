@@ -1,4 +1,5 @@
 import { describe, test, expect } from "bun:test"
+import * as path from "node:path"
 import {
   streamPartsFromContent,
   toAssistantMessage,
@@ -7,7 +8,7 @@ import {
   toSessionObject,
   toThemeRecord,
 } from "../src/v2/map.ts"
-import { createV2Api } from "../src/v2/adapter.ts"
+import { createV2Api, isTuiContext } from "../src/v2/adapter.ts"
 import type { V2Context, V2Event, V2Message, V2Session } from "../src/v2/types.ts"
 
 const assistant = (over: Partial<V2Message> = {}): V2Message => ({
@@ -297,5 +298,89 @@ describe("dual entrypoint contract", () => {
     // V1 TUI loader: requires tui() and must NOT also export server().
     expect(typeof value.tui).toBe("function")
     expect("server" in value).toBe(false)
+  })
+
+  // A directory under `plugins/` is activated with role=server, which reaches the
+  // shared default export instead of exports["."]. Throwing there used to fail
+  // plugin activation outright, so the TUI loader dropped the plugin too.
+  test("setup() is a no-op on a server context instead of throwing", async () => {
+    const { default: plugin } = (await import("../index.tsx")) as {
+      default: { setup: (ctx: unknown) => unknown }
+    }
+    // Mirrors the capability keys V2 builds for server activation.
+    const serverCtx = Object.fromEntries(
+      [
+        "app", "location", "options", "agent", "aisdk", "command", "credential",
+        "event", "experimental", "generate", "model", "provider", "integration",
+        "mcp", "permission", "plugin", "reference", "rpc", "skill", "storage",
+        "tool", "vcs", "websearch", "worktree", "session", "shell",
+      ].map((key) => [key, {}]),
+    )
+    expect(() => plugin.setup(serverCtx)).not.toThrow()
+    expect(plugin.setup(serverCtx)).toBeUndefined()
+    expect(isTuiContext(serverCtx)).toBe(false)
+    expect(isTuiContext(undefined)).toBe(false)
+  })
+
+  test("setup() still claims the sidebar slot on a TUI context", async () => {
+    const { default: plugin } = (await import("../index.tsx")) as {
+      default: { setup: (ctx: unknown) => unknown }
+    }
+    const fake = fakeContext()
+    const claims: Record<string, unknown>[] = []
+    fake.ctx.ui.slot = (claim) => {
+      claims.push(claim)
+      return () => {}
+    }
+    expect(isTuiContext(fake.ctx)).toBe(true)
+    const dispose = plugin.setup(fake.ctx) as () => void
+    expect(claims).toHaveLength(1)
+    expect(dispose).toBeFunction()
+    dispose()
+  })
+
+  test("setup() claims sidebar.content with prepend, not append", async () => {
+    const { default: plugin } = (await import("../index.tsx")) as {
+      default: { setup: (ctx: unknown) => unknown }
+    }
+    const fake = fakeContext()
+    const claims: Record<string, unknown>[] = []
+    fake.ctx.ui.slot = (claim) => {
+      claims.push(claim)
+      return () => {}
+    }
+    plugin.setup(fake.ctx)
+    expect(claims).toHaveLength(1)
+    // `append` lands below the builtins (opencode.sidebar.context /
+    // opencode.sidebar.mcp claim the same slot with `append`).
+    expect(claims[0].prepend).toBe("sidebar.content")
+    expect(claims[0].append).toBeUndefined()
+  })
+
+  // A local directory plugin source is resolved by literal path (<root>/tui,
+  // <root>/server, <root>/rpc); `package.json` `exports` is only consulted for
+  // npm package sources. So `exports["./tui"]` alone leaves `features.tui`
+  // false and the TUI loader drops the plugin before mounting it.
+  test("the plugin root exposes a literal-path resolvable tui entrypoint", async () => {
+    const root = new URL("..", import.meta.url).pathname
+    // Mirrors the 2.x loader resolver: for a directory source it tries each
+    // candidate as path.resolve(directory, name) and swallows resolve errors.
+    const resolveLike = (...candidates: string[]) => {
+      for (const entry of candidates) {
+        try {
+          return Bun.pathToFileURL(Bun.resolveSync(path.resolve(root, entry), root)).href
+        } catch {}
+      }
+      return undefined
+    }
+
+    // Must resolve, or `features.tui` stays false and the TUI loader drops us.
+    expect(resolveLike("tui")).toEndWith("/cache-hit-local/tui.ts")
+    // `server` intentionally has no root file: it falls back to <root>/index.
+    expect(resolveLike("server", "index")).toEndWith("/cache-hit-local/index.tsx")
+
+    const viaTui = (await import("../tui.ts")) as { default: Record<string, unknown> }
+    const viaIndex = (await import("../index.tsx")) as { default: Record<string, unknown> }
+    expect(viaTui.default).toBe(viaIndex.default)
   })
 })

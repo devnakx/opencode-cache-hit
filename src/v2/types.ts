@@ -1,5 +1,9 @@
 /**
- * Structural types for the OpenCode 2 TUI plugin context.
+ * Structural types for the OpenCode 2 **TUI** plugin context — i.e. the context
+ * `tui()` is mounted with, which carries `data`/`ui`/`theme`. It is NOT the
+ * shape V2 passes when it activates a plugin on the server (that one has only
+ * `app`/`location`/`agent`/`tool`/...); use `isTuiContext` in `./adapter.ts` to
+ * tell them apart before reading any member.
  *
  * Hand-written on purpose, like `OpenCodeTuiApi` in `../types.ts`: the plugin
  * must not depend on `@opencode/plugin` at runtime. V1 does not substitute that
@@ -78,6 +82,18 @@ export type V2Event = {
 
 export type V2Location = { directory: string }
 
+/**
+ * Placement kinds `ui.slot` accepts. The host renders claims in this order:
+ * `before` → `replace` → `prepend` → the slot's own children → `append` →
+ * `after`, so `prepend` is the only way to sit above built-in sidebar content.
+ * Exactly one placement key is required per claim; the host throws otherwise.
+ */
+export type V2SlotPlacement = "prepend" | "append" | "before" | "after" | "replace"
+
+export type V2SlotClaim = {
+  render: (input: { sessionID: string }) => unknown
+} & Partial<Record<V2SlotPlacement, string>>
+
 export type V2Collection<Value> = {
   list: (location?: V2Location) => Value[] | undefined
   sync: (location?: V2Location) => Promise<void>
@@ -118,9 +134,6 @@ export type V2Context = {
     }
   }
   ui: {
-    slot: (claim: {
-      append: string
-      render: (input: { sessionID: string }) => unknown
-    }) => () => void
+    slot: (claim: V2SlotClaim) => () => void
   }
 }
