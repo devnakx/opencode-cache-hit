@@ -18,6 +18,7 @@ import type {
   SubAgentSummary,
 } from "./types.ts"
 import { loadSessionMessages, type SessionMessageLoadStatus } from "./session-messages.ts"
+import { mergeHistoryMessage, syncLiveMessages } from "./history-messages.ts"
 import {
   emptySessionSnapshot,
   aggregateFromSessionObject,
@@ -138,16 +139,6 @@ export function CacheHitSidebarHost(props: {
     return (props.api.state.session.messages(sid) ?? []) as AssistantMessage[]
   })
 
-  const mergeHistoryMessage = (messages: readonly AssistantMessage[], update: AssistantMessage) => {
-    const id = update.id ?? update.messageID
-    const next = [...messages]
-    const index = id ? next.findIndex((message) => (message.id ?? message.messageID) === id) : -1
-    if (index >= 0) next[index] = update
-    else next.push(update)
-    next.sort((a, b) => (a.time?.created ?? 0) - (b.time?.created ?? 0))
-    return next
-  }
-
   const loadHistory = (sid: string) => {
     const generation = ++historyLoadGeneration
     pendingHistoryUpdates.clear()
@@ -257,11 +248,19 @@ export function CacheHitSidebarHost(props: {
     setStreamingNow({ phase: result.phase, speed: result.speed })
   }
 
+  // Fold the live list into history on the same poll that drives streaming, not on
+  // `mainMessages` reactivity: the V2 store does not invalidate this component's
+  // memos on its own, so an effect keyed on the memo would never re-run.
+  const tick = () => {
+    trackStreaming()
+    untrack(() => setHistoryMessages((history) => syncLiveMessages(history, mainMessages())))
+  }
+
   createEffect(() => {
     // Adaptive polling: idle=3s, active=1s. trackStreaming() calls setStreamingNow(),
     // which triggers this effect to re-read the new phase and adjust the next interval.
     const ms = streamingNow().phase === "idle" ? 3000 : 1000
-    const timer = setTimeout(trackStreaming, ms)
+    const timer = setTimeout(tick, ms)
     onCleanup(() => clearTimeout(timer))
   })
 

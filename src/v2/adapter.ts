@@ -91,6 +91,12 @@ export function createV2Api(ctx: V2Context): V2Api {
   // refresh tick from `message.updated`, so an empty payload is the right signal.
   subscribe("session.usage.updated", () => emit("message.updated", { properties: {} }))
 
+  // Content events fire during streaming but only rewrite `content`: they carry
+  // `messageID` and `content`, never `tokens`/`cost`/`time.completed`. Useful for
+  // part timing and for picking up the live row mid-turn, but not a turn-end
+  // signal. V2 does define a native `message.updated` with a V1-shaped `info`,
+  // but it is not observed reaching `ctx.data.on`, so consumers that need a
+  // finalised row must read the live list instead (see `syncLiveMessages`).
   subscribe("session.message.content.updated", (event: V2Event) => {
     const sessionID = event.data?.sessionID ?? ""
     const messageID = event.data?.messageID ?? ""
