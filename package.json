@@ -30,7 +30,7 @@
     "timeline"
   ],
   "exports": {
-    ".": "./index.tsx",
+    ".": "./src/v2/server.ts",
     "./tui": "./dist/tui.js",
     "./tui-panel": "./src/tui-panel/index.ts"
   },
