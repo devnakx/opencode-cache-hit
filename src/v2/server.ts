@@ -10,7 +10,10 @@
  * Deliberately a no-op: the real work is in `exports["./tui"]`.
  * V1 never resolves this file (it reads `./server` or `main`, and neither exists).
  */
+/** Shared by the server and TUI entries: V2 correlates the two by this id. */
+export const PLUGIN_ID = "opencode-cache-hit"
+
 export default {
-  id: "opencode-cache-hit",
+  id: PLUGIN_ID,
   setup() {},
 }

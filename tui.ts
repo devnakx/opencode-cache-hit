@@ -1,14 +1,13 @@
 /**
- * OpenCode 2 TUI entrypoint for a *local directory* install.
+ * V2 TUI entry discovered from the package root.
  *
- * When the plugin root is registered as a plugin source, the 2.x loader resolves
- * entrypoints by literal path (`<root>/tui`, `<root>/server`, `<root>/rpc`) and
- * never reads `package.json` `exports` — that only applies to npm package
- * sources. `exports["./tui"]` therefore does not make `features.tui` true here,
- * and the TUI loader drops the plugin before mounting it.
+ * V2 resolves local directory plugins as `<dir>/tui` (`Host.resolve`); without
+ * this shim the CLI reports the plugin as unsupported and never mounts the
+ * sidebar. Re-exporting the pre-transformed bundle keeps `solid-js` and
+ * `@opentui/solid` external so the host and the plugin share one runtime (see
+ * docs/adr/0001-prebundled-tui-entry.md).
  *
- * This file exists to be found by that resolver. Keep it in sync with
- * `index.tsx`; `exports["./tui"]` (used by npm installs) is the bundled build of
- * the same module. See docs/en/design.md § Version support.
+ * `dist/tui.js` is gitignored: run `bun run build` (or the `prepare` script)
+ * before loading a plain checkout.
  */
-export { default } from "./src/plugin.tsx"
+export { default } from "./dist/tui.js"

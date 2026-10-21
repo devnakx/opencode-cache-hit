@@ -1,29 +1,19 @@
 /** @jsxImportSource @opentui/solid */
 import { createSignal, createMemo, createEffect, onCleanup, untrack } from "solid-js"
 import { CacheHitSidebar } from "./widget.tsx"
-import type { DisplayConfig, TimelineConfig, CacheTTLConfig, DynamicPricingConfig } from "./plugin-config.ts"
 import { isToolSummaryEnabled } from "./plugin-config.ts"
+import { createCostFormatter, createRateFormatter } from "./format-cost.ts"
 import { createTimelineCollector } from "./timeline/collector.ts"
 import {
   createFirstPartTimeTracker,
   earliestPartStart,
   STREAM_PART_TYPES,
 } from "./first-part-time.ts"
-import { createToolTimingTracker, type ToolPartEventData } from "./tool-timing.ts"
+import { createToolTimingTracker } from "./tool-timing.ts"
 import { createItlTracker } from "./itl-tracker.ts"
-import { isPartUpdatedEvent } from "./types.ts"
-import type {
-  AssistantMessage,
-  OpenCodeTuiApi,
-  SubAgentSummary,
-} from "./types.ts"
+import type { AssistantMessage, SubAgentSummary, TuiApi } from "./types.ts"
 import { loadSessionMessages, type SessionMessageLoadStatus } from "./session-messages.ts"
-import {
-  applyUsagePatch,
-  mergeHistoryMessage,
-  syncLiveMessages,
-  type AssistantUsagePatch,
-} from "./history-messages.ts"
+import { mergeHistoryMessage, syncLiveMessages } from "./history-messages.ts"
 import {
   emptySessionSnapshot,
   aggregateFromSessionObject,
@@ -44,7 +34,7 @@ import {
 } from "./streaming-state.ts"
 
 /**
- * Session-scoped sidebar host. Bumps `refreshTick` on message.updated
+ * Session-scoped sidebar host. Bumps `refreshTick` on message and tick events
  * so memos re-compute.
  *
  * Where available, session.get() provides DB-level aggregate cost/tokens
@@ -53,18 +43,12 @@ import {
  * When absent, the code falls back to session.messages(), which is limited
  * to the most recent 100 messages per call.
  *
- * Timeline writes are event-driven: message.updated → handleMessage → appendFile.
+ * Timeline writes are event-driven: message → handleMessage → appendFile.
  */
 export function CacheHitSidebarHost(props: {
   sessionId: string
   theme: Record<string, unknown>
-  display: DisplayConfig
-  timeline: TimelineConfig
-  cacheTTL: CacheTTLConfig
-  dynamicPricing: DynamicPricingConfig
-  formatCost: (amount: number) => string
-  formatRate: (perMillion: number) => string
-  api: OpenCodeTuiApi
+  api: TuiApi
 }) {
   const [refreshTick, setRefreshTick] = createSignal(0)
   const [childIds, setChildIds] = createSignal<string[]>([])
@@ -72,7 +56,6 @@ export function CacheHitSidebarHost(props: {
   const [historyMessages, setHistoryMessages] = createSignal<AssistantMessage[]>([])
   const [historyStatus, setHistoryStatus] = createSignal<SessionMessageLoadStatus>("complete")
   const pendingHistoryUpdates = new Map<string, AssistantMessage>()
-  const pendingUsageUpdates = new Map<string, AssistantUsagePatch>()
   let historyLoadGeneration = 0
 
   /** Re-read cache-hit.config.json when parent session changes (picks up edits without full plugin reload). */
@@ -84,6 +67,11 @@ export function CacheHitSidebarHost(props: {
   const cacheTTL = createMemo(() => runtimeConfig().cacheTTL)
   const dynamicPricing = createMemo(() => runtimeConfig().dynamicPricing)
   const timelineConfig = createMemo(() => runtimeConfig().timeline)
+  /** Currency formatting lives with the config it derives from, so cost edits reload like the rest. */
+  const formatters = createMemo(() => {
+    const cost = runtimeConfig().cost
+    return { formatCost: createCostFormatter(cost), formatRate: createRateFormatter(cost) }
+  })
 
   const bumpRefresh = () => setRefreshTick((v) => v + 1)
 
@@ -109,7 +97,6 @@ export function CacheHitSidebarHost(props: {
 
   const childSync = createChildSessionSync({
     client: props.api.client.session,
-    getDirectory: () => props.api.state.path.directory,
     getParentId: () => props.sessionId,
     setChildIds,
     setChildEntries,
@@ -128,27 +115,24 @@ export function CacheHitSidebarHost(props: {
     if (session) {
       const snap = aggregateFromSessionObject(session)
       if (mainSessionHasStats(snap)) {
-        const msgs = props.api.state.session.messages(sid) as AssistantMessage[] | undefined
+        const msgs = props.api.state.session.messages(sid)
         return msgs ? withModelFallback(snap, msgs) : snap
       }
     }
     const msgs = props.api.state.session.messages(sid)
-    return msgs?.length
-      ? aggregateSessionFromMessages(msgs as AssistantMessage[])
-      : emptySessionSnapshot()
+    return msgs?.length ? aggregateSessionFromMessages(msgs) : emptySessionSnapshot()
   })
 
   const mainMessages = createMemo(() => {
     void refreshTick()
     const sid = props.sessionId
     if (!sid) return [] as AssistantMessage[]
-    return (props.api.state.session.messages(sid) ?? []) as AssistantMessage[]
+    return props.api.state.session.messages(sid) ?? []
   })
 
   const loadHistory = (sid: string) => {
     const generation = ++historyLoadGeneration
     pendingHistoryUpdates.clear()
-    pendingUsageUpdates.clear()
     const mirror = untrack(mainMessages)
     setHistoryMessages(mirror)
     // Reset to "complete" so a session switch does not carry over the previous
@@ -159,16 +143,12 @@ export function CacheHitSidebarHost(props: {
     void loadSessionMessages({
       client: props.api.client.session,
       sessionId: sid,
-      directory: props.api.state.path.directory,
       fallback: mirror,
     }).then((result) => {
       if (generation !== historyLoadGeneration) return
       let merged = result.messages
       for (const update of pendingHistoryUpdates.values()) {
         merged = mergeHistoryMessage(merged, update)
-      }
-      for (const patch of pendingUsageUpdates.values()) {
-        merged = applyUsagePatch(merged, patch)
       }
       setHistoryMessages(merged)
       setHistoryStatus(result.status)
@@ -186,7 +166,7 @@ export function CacheHitSidebarHost(props: {
         if (session) {
           const snap = aggregateFromSessionObject(session)
           if (subAgentHasStats(snap)) {
-            const msgs = props.api.state.session.messages(cid) as AssistantMessage[] | undefined
+            const msgs = props.api.state.session.messages(cid)
             const merged = msgs ? withModelFallback(snap, msgs) : snap
             const speed = msgs
               ? (useTps ? computeAvgTokenSpeed(msgs) || undefined : computeAvgTokenTpotMs(msgs))
@@ -196,11 +176,9 @@ export function CacheHitSidebarHost(props: {
         }
         const msgs = props.api.state.session.messages(cid)
         if (!msgs?.length) return null
-        const snap = aggregateSessionFromMessages(msgs as AssistantMessage[])
+        const snap = aggregateSessionFromMessages(msgs)
         if (!subAgentHasStats(snap)) return null
-        const speed = useTps
-          ? computeAvgTokenSpeed(msgs as AssistantMessage[]) || undefined
-          : computeAvgTokenTpotMs(msgs as AssistantMessage[])
+        const speed = useTps ? computeAvgTokenSpeed(msgs) || undefined : computeAvgTokenTpotMs(msgs)
         return toSubAgentSummary(cid, snap, speed, created)
       })
       .filter(Boolean) as SubAgentSummary[]
@@ -235,7 +213,6 @@ export function CacheHitSidebarHost(props: {
     const msgID = msg.id ?? msg.messageID
     const created = msg.time?.created
     if (!msgID || typeof created !== "number" || firstPartTracker.get().has(msgID)) return
-    if (!props.api.state.part) return
     const start = earliestPartStart(props.api.state.part(msgID), created)
     if (start !== undefined) {
       recordPart(msgID, "text", start, "sdk")
@@ -267,10 +244,9 @@ export function CacheHitSidebarHost(props: {
     void loadSessionMessages({
       client: props.api.client.session,
       sessionId: sid,
-      directory: props.api.state.path.directory,
       fallback: [],
-      // Covers the assistant steps of a normal turn; the step patch fills any
-      // earlier rows that a very long tool loop pushes past this window.
+      // Covers the assistant steps of a normal turn; a very long tool loop may
+      // push earlier rows past this window.
       limit: 50,
     })
       .then((result) => {
@@ -283,10 +259,10 @@ export function CacheHitSidebarHost(props: {
       })
   }
 
-  // A V2 turn can finish without a `message.updated` that carries tokens: content
-  // snapshots arrive before the step ends, and the step event is not always
-  // forwarded to plugins. Once streaming settles, re-read the last few rows from
-  // the API so per-call Hit and cache TTL cannot stay pinned to an older turn.
+  // A V2 turn can finish without a finalised usage row reaching the host: the
+  // store may already hold a content-only snapshot, and step events are not
+  // always forwarded. Once streaming settles, re-read the last few rows so
+  // per-call Hit and cache TTL cannot stay pinned to an older turn.
   const scheduleUsageRefresh = () => {
     if (usageRefreshTimer !== undefined) clearTimeout(usageRefreshTimer)
     usageRefreshTimer = setTimeout(() => {
@@ -304,9 +280,10 @@ export function CacheHitSidebarHost(props: {
     if (usageRefreshTimer !== undefined) clearTimeout(usageRefreshTimer)
   })
 
-  // Fold the live list into history on the same poll that drives streaming, not on
-  // `mainMessages` reactivity: the V2 store does not invalidate this component's
-  // memos on its own, so an effect keyed on the memo would never re-run.
+  // Fold the live list into history on the same poll that drives streaming, not
+  // on `mainMessages` reactivity: the V2 store does not invalidate this
+  // component's memos on its own, so an effect keyed on the memo would never
+  // re-run.
   const tick = () => {
     trackStreaming()
     untrack(() => setHistoryMessages((history) => syncLiveMessages(history, mainMessages())))
@@ -337,60 +314,39 @@ export function CacheHitSidebarHost(props: {
   })
 
   createEffect(() => {
-    const unsub = props.api.event.on("message.updated", (event) => {
+    const unsub = props.api.event.on("message", (event) => {
       bumpRefresh()
-      const msg = event.properties?.info as (AssistantMessage & { sessionID?: string }) | undefined
-      const sid = msg?.sessionID
+      const msg = event.info
+      const sid = msg.sessionID
       childSync.onForeignSessionActivity(sid)
-      if (msg?.role === "assistant") {
+      if (msg.role === "assistant") {
         seedTtftFromParts(msg)
       }
-      if (sid && msg) {
+      if (sid) {
         if (sid === props.sessionId && msg.role === "assistant") {
           pendingHistoryUpdates.set(msg.id ?? msg.messageID ?? String(msg.time?.created ?? Date.now()), msg)
           setHistoryMessages((messages) => mergeHistoryMessage(messages, msg))
         }
         timeline.handleMessage(sid, msg)
       }
-      if (!msg?.tokens && (!sid || sid === props.sessionId)) scheduleUsageRefresh()
+      if (!msg.tokens && (!sid || sid === props.sessionId)) scheduleUsageRefresh()
     })
-
-    // V2-specific finalised usage. The step event carries tokens/cost but not
-    // `model`, so patch the existing history row instead of replacing it.
-    const unsubUsage = props.api.event.on("message.usage", (event) => {
-      const info = event.properties as
-        | {
-            sessionID?: string
-            messageID?: string
-            tokens?: AssistantMessage["tokens"]
-            cost?: number
-            finish?: string
-            completed?: number
-          }
-        | undefined
-      if (!info?.messageID || info.sessionID !== props.sessionId) return
-      const patch: AssistantUsagePatch = {
-        messageID: info.messageID,
-        tokens: info.tokens,
-        cost: info.cost,
-        finish: info.finish,
-        completed: info.completed,
-      }
-      pendingUsageUpdates.set(patch.messageID, patch)
-      setHistoryMessages((messages) => applyUsagePatch(messages, patch))
+    const unsubTick = props.api.event.on("tick", () => {
       bumpRefresh()
+      // Usage aggregates change during a turn, but a finalised row may still be
+      // missing from history when the step event never reaches us. Only an
+      // active turn needs the fallback read; idle ticks would poll the API.
+      if (streamingNow().phase !== "idle") scheduleUsageRefresh()
     })
-
     onCleanup(() => {
-      unsub?.()
-      unsubUsage?.()
+      unsub()
+      unsubTick()
     })
   })
 
   createEffect(() => {
-    const unsub1 = props.api.event.on("message.part.updated", (event) => {
-      if (!isPartUpdatedEvent(event)) return
-      const { part } = event.properties
+    const unsub1 = props.api.event.on("part", (event) => {
+      const part = event.part
       if (STREAM_PART_TYPES.has(part.type) && typeof part.time?.start === "number") {
         const recorded = recordPart(part.messageID, part.type, part.time.start, "sdk")
         if (recorded) trackStreaming()
@@ -401,30 +357,26 @@ export function CacheHitSidebarHost(props: {
       // parts take priority via the tracker's existing upgrade logic.
       // Only fire if the tool part has no SDK time.start (avoid redundant call when
       // the part already carried a valid timestamp and was handled by the branch above).
+      // `pending` reaches this path only from V1: the V2 adapter emits running/completed/error.
       if (part.type === "tool" && !part.time?.start && part.state?.status === "pending") {
         const recorded = recordPart(part.messageID, "tool", Date.now(), "tui")
         if (recorded) trackStreaming()
       }
       if (part.type === "tool") {
-        toolTiming.handleToolPart(part.messageID, part as ToolPartEventData)
+        toolTiming.handleToolPart(part.messageID, part)
       }
     })
-    const unsub2 = props.api.event.on("message.part.delta", (event) => {
-      const props_ = event.properties
-      const messageID = props_?.messageID
-      const field = props_?.field
+    const unsub2 = props.api.event.on("delta", (event) => {
       // `Date.now()` is the event-handler arrival time, not the true network-first-byte time.
       // It may lag by tens to hundreds of ms under UI thread pressure; used only as a
-      // fallback when SDK-side part.time.start is unavailable (message.part.updated).
-      if (typeof messageID === "string" && typeof field === "string" && STREAM_PART_TYPES.has(field)) {
-        const recorded = recordPart(messageID, field, Date.now(), "tui")
-        itlTracker.trackChunk(messageID)
-        if (recorded) trackStreaming()
-      }
+      // fallback when SDK-side part.time.start is unavailable (part events).
+      const recorded = recordPart(event.messageID, event.field, Date.now(), "tui")
+      itlTracker.trackChunk(event.messageID)
+      if (recorded) trackStreaming()
     })
     onCleanup(() => {
-      unsub1?.()
-      unsub2?.()
+      unsub1()
+      unsub2()
     })
   })
 
@@ -440,9 +392,9 @@ export function CacheHitSidebarHost(props: {
       metricMessageStatus={() => historyStatus()}
       main={mainSnap}
       subAgents={subAgentList}
-      providers={() => props.api.state.provider ?? []}
-      formatCost={props.formatCost}
-      formatRate={props.formatRate}
+      providers={() => props.api.state.provider}
+      formatCost={(amount) => formatters().formatCost(amount)}
+      formatRate={(perMillion) => formatters().formatRate(perMillion)}
       streamingNow={streamingNow}
       firstPartTime={firstPartTime}
     />

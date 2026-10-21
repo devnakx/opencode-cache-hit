@@ -1,11 +1,11 @@
 /**
  * Structural types for the OpenCode 2 **TUI** plugin context — i.e. the context
- * `tui()` is mounted with, which carries `data`/`ui`/`theme`. It is NOT the
+ * `setup()` is mounted with, which carries `data`/`ui`/`theme`. It is NOT the
  * shape V2 passes when it activates a plugin on the server (that one has only
  * `app`/`location`/`agent`/`tool`/...); use `isTuiContext` in `./adapter.ts` to
  * tell them apart before reading any member.
  *
- * Hand-written on purpose, like `OpenCodeTuiApi` in `../types.ts`: the plugin
+ * Hand-written on purpose, like `TuiApi` in `../types.ts`: the plugin
  * must not depend on `@opencode/plugin` at runtime. V1 does not substitute that
  * specifier, so a runtime import of it breaks V1 loading. Only the members this
  * adapter actually reads are declared.
@@ -20,12 +20,20 @@ export type V2TokenUsage = {
 
 export type V2ModelRef = { id: string; providerID: string; variant?: string }
 
+/**
+ * One stored content part, as the host writes it into the message row (see
+ * `session_message.data.content`). Text parts carry no timing; reasoning and
+ * tool parts do. Tool identity lives under `id` / `name` here, not under the
+ * `callID` / `tool` names the internal contract uses.
+ */
 export type V2ContentPart = {
   type: string
-  /** reasoning/tool parts carry `created`; text parts carry none. */
+  /** Streaming text for `text` / `reasoning` parts. */
+  text?: string
+  id?: string
+  name?: string
+  state?: { status?: string; input?: Record<string, unknown> }
   time?: { created?: number; completed?: number; ran?: number }
-  state?: { status?: string; input?: unknown }
-  [key: string]: unknown
 }
 
 export type V2Message = {
@@ -75,28 +83,28 @@ export type V2Event = {
     sessionID?: string
     assistantMessageID?: string
     messageID?: string
-    content?: ReadonlyArray<V2ContentPart>
-    /** Finalised usage carried by `session.step.ended` / `session.step.failed`. */
+    /** Tool call identity on `session.tool.*` events. */
+    id?: string
+    name?: string
+    status?: string
+    /** Incremental stream text (`text.delta` / `reasoning.delta`). */
+    delta?: string
+    /** Authoritative full text on `text.ended` / `reasoning.ended`. */
+    text?: string
+    ordinal?: number
+    /** `session.step.*`: one step is one assistant message. */
+    agent?: string
+    model?: V2ModelRef
+    started?: number
+    finish?: string
     cost?: number
     tokens?: V2TokenUsage
-    finish?: string
-    [key: string]: unknown
+    /** `step.failed` / `tool.failed` carry it; nothing reads it. */
+    error?: unknown
   }
 }
 
 export type V2Location = { directory: string }
-
-/**
- * Placement kinds `ui.slot` accepts. The host renders claims in this order:
- * `before` → `replace` → `prepend` → the slot's own children → `append` →
- * `after`, so `prepend` is the only way to sit above built-in sidebar content.
- * Exactly one placement key is required per claim; the host throws otherwise.
- */
-export type V2SlotPlacement = "prepend" | "append" | "before" | "after" | "replace"
-
-export type V2SlotClaim = {
-  render: (input: { sessionID: string }) => unknown
-} & Partial<Record<V2SlotPlacement, string>>
 
 export type V2Collection<Value> = {
   list: (location?: V2Location) => Value[] | undefined
@@ -125,7 +133,7 @@ export type V2Context = {
       provider: V2Collection<V2Provider>
       model: V2Collection<V2Model>
     }
-    on: <Type extends string>(type: Type, handler: (event: any) => void) => () => void
+    on: <Type extends string>(type: Type, handler: (event: V2Event) => void) => () => void
   }
   /** Generated client. Used for uncapped history reads. */
   client?: {
@@ -134,10 +142,31 @@ export type V2Context = {
         sessionID: string
         limit?: number
         order?: "asc" | "desc"
-      }) => Promise<{ data?: V2Message[] }>
+        /** Opaque page cursor; do not combine with `order`. */
+        cursor?: string
+      }) => Promise<{
+        data?: V2Message[]
+        cursor?: { next?: string | null; previous?: string | null }
+      }>
     }
   }
   ui: {
-    slot: (claim: V2SlotClaim) => () => void
+    /**
+     * Disposer for the slot claim; not verified against the host, so callers
+     * guard the call.
+     */
+    slot: (claim: V2SlotClaim) => (() => void) | undefined
   }
 }
+
+/**
+ * Placement kinds `ui.slot` accepts. The host renders claims in this order:
+ * `before` → `replace` → `prepend` → the slot's own children → `append` →
+ * `after`, so `prepend` is the only way to sit above built-in sidebar content.
+ * Exactly one placement key is required per claim; the host throws otherwise.
+ */
+export type V2SlotPlacement = "prepend" | "append" | "before" | "after" | "replace"
+
+export type V2SlotClaim = {
+  render: (input: { sessionID: string }) => unknown
+} & Partial<Record<V2SlotPlacement, string>>

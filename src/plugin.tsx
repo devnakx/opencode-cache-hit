@@ -1,38 +1,26 @@
 /** @jsxImportSource @opentui/solid */
 import { CacheHitSidebarHost } from "./sidebar-host.tsx"
-import { loadPluginConfig } from "./load-config.ts"
-import { createCostFormatter, createRateFormatter } from "./format-cost.ts"
-import type { OpenCodeTuiApi, V1TuiApi } from "./types.ts"
+import type { TuiApi } from "./types.ts"
 import { createV2Api, isTuiContext } from "./v2/adapter.ts"
 import { toThemeRecord } from "./v2/map.ts"
+import { PLUGIN_ID } from "./v2/server.ts"
+import { toTuiApi, type V1TuiApi } from "./v1-map.ts"
 
-export const PLUGIN_ID = "opencode-cache-hit"
+export { PLUGIN_ID }
 
-/** Shared by both entrypoints: same host component, same config, same formatters. */
-function sidebar(api: OpenCodeTuiApi, sessionId: string, theme: Record<string, unknown>) {
-  const pluginConfig = loadPluginConfig()
-  return (
-    <CacheHitSidebarHost
-      sessionId={sessionId}
-      theme={theme}
-      display={pluginConfig.display}
-      timeline={pluginConfig.timeline}
-      cacheTTL={pluginConfig.cacheTTL}
-      dynamicPricing={pluginConfig.dynamicPricing}
-      formatCost={createCostFormatter(pluginConfig.cost)}
-      formatRate={createRateFormatter(pluginConfig.cost)}
-      api={api}
-    />
-  )
+/** Shared by both entrypoints: same host component, same source of config (the host). */
+function sidebar(api: TuiApi, sessionId: string, theme: Record<string, unknown>) {
+  return <CacheHitSidebarHost sessionId={sessionId} theme={theme} api={api} />
 }
 
-/** OpenCode 1: TUI slot API. */
+/** OpenCode 1: TUI slot API. This path maps legacy events onto `TuiEvent`. */
 export const tui = async (api: V1TuiApi) => {
+  const tuiApi = toTuiApi(api)
   api.slots.register({
     order: 56,
     slots: {
       sidebar_content(ctx, props) {
-        return sidebar(api, props.session_id ?? "", ctx.theme.current)
+        return sidebar(tuiApi, props.session_id ?? "", ctx.theme.current)
       },
     },
   })
