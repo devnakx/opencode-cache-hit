@@ -43,7 +43,9 @@ export function CacheHitSidebar(props: {
   const detail = createSectionFold(true)
   const speed = createSectionFold(true)
   const model = createSectionFold(true)
-  const lineages = createSectionFold(true)
+  // The Models section only matters after a model switch; keep it folded so the
+  // active model's detail rows stay visible without the extra per-lineage TTLs.
+  const lineages = createSectionFold(false)
   const agents = createSectionFold(true)
 
   const borderOn = () => props.display.panelBorder

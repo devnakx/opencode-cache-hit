@@ -266,6 +266,34 @@ describe("V2 adapter", () => {
     api.dispose()
   })
 
+  test("step completion forwards finalised usage as a patch", () => {
+    const fake = fakeContext()
+    const api = createV2Api(fake.ctx)
+    const patches: unknown[] = []
+    api.event.on("message.usage", (event) => patches.push(event.properties))
+
+    fake.emit({
+      type: "session.step.ended",
+      created: 5000,
+      data: {
+        sessionID: "ses_1",
+        assistantMessageID: "msg_1",
+        finish: "tool-calls",
+        cost: 0.25,
+        tokens: { input: 100, output: 20, reasoning: 5, cache: { read: 900, write: 0 } },
+      },
+    })
+    expect(patches[0]).toEqual({
+      sessionID: "ses_1",
+      messageID: "msg_1",
+      tokens: { input: 100, output: 20, reasoning: 5, cache: { read: 900, write: 0 } },
+      cost: 0.25,
+      finish: "tool-calls",
+      completed: 5000,
+    })
+    api.dispose()
+  })
+
   test("state and client reads map to the V1 surface", async () => {
     const fake = fakeContext()
     fake.sessions.set("ses_1", { id: "ses_1", parentID: "ses_0", time: { created: 10 }, cost: 1, tokens: {} as never })

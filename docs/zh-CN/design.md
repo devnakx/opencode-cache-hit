@@ -186,6 +186,8 @@ flowchart TD
 
 主 session 显式订阅 `message.updated`（在 `sidebar-host`）：每次事件 `refreshTick++`，触发相关 memo 重算。主指标总量优先 DB 级 `session.get` 聚合（完整、不受上限影响）；lineage 分桶使用直接历史。流式速度和 TTFT 使用 TUI 镜像；子 session 总量优先使用 `session.get()`。
 
+OpenCode 2 中，消息可能先通过 `session.message.content.updated` 进入历史，此时该轮尚未带上 token。V2 适配器会把 `session.step.ended` / `session.step.failed` 转为 `message.usage`，`sidebar-host` 也会在流式结束后从 API 重读最近 50 条消息。两条路径都只补写历史行，不替换整行，因此模型/agent 元数据不会丢失，单轮 Hit、lineage 比例和缓存 TTL 也不会停留在旧轮次上。
+
 ### session.get() 可用性
 
 `session.get()` 提供数据库级聚合（不受 100 条消息限制），但在 [opencode#26644](https://github.com/anomalyco/opencode/pull/26644)（2026-05-12）才加入。在此之前 fork 的分支（含 MiMo-Code）缺少该方法。主指标路径优先使用 DB 级 `session.get` 聚合；缺失或为空时再直接请求最多 10,000 条 session 消息。请求失败且镜像已满 100 条时标记 `unavailable`，返回历史达 10,000 上限时标记 `capped`。镜像每次最多包含最近 100 条消息。

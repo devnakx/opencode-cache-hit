@@ -76,6 +76,10 @@ export type V2Event = {
     assistantMessageID?: string
     messageID?: string
     content?: ReadonlyArray<V2ContentPart>
+    /** Finalised usage carried by `session.step.ended` / `session.step.failed`. */
+    cost?: number
+    tokens?: V2TokenUsage
+    finish?: string
     [key: string]: unknown
   }
 }

@@ -18,7 +18,12 @@ import type {
   SubAgentSummary,
 } from "./types.ts"
 import { loadSessionMessages, type SessionMessageLoadStatus } from "./session-messages.ts"
-import { mergeHistoryMessage, syncLiveMessages } from "./history-messages.ts"
+import {
+  applyUsagePatch,
+  mergeHistoryMessage,
+  syncLiveMessages,
+  type AssistantUsagePatch,
+} from "./history-messages.ts"
 import {
   emptySessionSnapshot,
   aggregateFromSessionObject,
@@ -67,6 +72,7 @@ export function CacheHitSidebarHost(props: {
   const [historyMessages, setHistoryMessages] = createSignal<AssistantMessage[]>([])
   const [historyStatus, setHistoryStatus] = createSignal<SessionMessageLoadStatus>("complete")
   const pendingHistoryUpdates = new Map<string, AssistantMessage>()
+  const pendingUsageUpdates = new Map<string, AssistantUsagePatch>()
   let historyLoadGeneration = 0
 
   /** Re-read cache-hit.config.json when parent session changes (picks up edits without full plugin reload). */
@@ -142,6 +148,7 @@ export function CacheHitSidebarHost(props: {
   const loadHistory = (sid: string) => {
     const generation = ++historyLoadGeneration
     pendingHistoryUpdates.clear()
+    pendingUsageUpdates.clear()
     const mirror = untrack(mainMessages)
     setHistoryMessages(mirror)
     // Reset to "complete" so a session switch does not carry over the previous
@@ -159,6 +166,9 @@ export function CacheHitSidebarHost(props: {
       let merged = result.messages
       for (const update of pendingHistoryUpdates.values()) {
         merged = mergeHistoryMessage(merged, update)
+      }
+      for (const patch of pendingUsageUpdates.values()) {
+        merged = applyUsagePatch(merged, patch)
       }
       setHistoryMessages(merged)
       setHistoryStatus(result.status)
@@ -248,6 +258,52 @@ export function CacheHitSidebarHost(props: {
     setStreamingNow({ phase: result.phase, speed: result.speed })
   }
 
+  let usageRefreshTimer: ReturnType<typeof setTimeout> | undefined
+  let usageRefreshInFlight = false
+
+  const refreshRecentUsage = (sid: string) => {
+    if (!props.api.client.session.messages || usageRefreshInFlight || !sid) return
+    usageRefreshInFlight = true
+    void loadSessionMessages({
+      client: props.api.client.session,
+      sessionId: sid,
+      directory: props.api.state.path.directory,
+      fallback: [],
+      // Covers the assistant steps of a normal turn; the step patch fills any
+      // earlier rows that a very long tool loop pushes past this window.
+      limit: 50,
+    })
+      .then((result) => {
+        if (sid !== props.sessionId || result.messages.length === 0) return
+        setHistoryMessages((history) => syncLiveMessages(history, result.messages))
+      })
+      .catch(() => {})
+      .finally(() => {
+        usageRefreshInFlight = false
+      })
+  }
+
+  // A V2 turn can finish without a `message.updated` that carries tokens: content
+  // snapshots arrive before the step ends, and the step event is not always
+  // forwarded to plugins. Once streaming settles, re-read the last few rows from
+  // the API so per-call Hit and cache TTL cannot stay pinned to an older turn.
+  const scheduleUsageRefresh = () => {
+    if (usageRefreshTimer !== undefined) clearTimeout(usageRefreshTimer)
+    usageRefreshTimer = setTimeout(() => {
+      usageRefreshTimer = undefined
+      const sid = props.sessionId
+      if (!sid) return
+      if (streamingNow().phase !== "idle") {
+        scheduleUsageRefresh()
+        return
+      }
+      refreshRecentUsage(sid)
+    }, 1500)
+  }
+  onCleanup(() => {
+    if (usageRefreshTimer !== undefined) clearTimeout(usageRefreshTimer)
+  })
+
   // Fold the live list into history on the same poll that drives streaming, not on
   // `mainMessages` reactivity: the V2 store does not invalidate this component's
   // memos on its own, so an effect keyed on the memo would never re-run.
@@ -296,8 +352,39 @@ export function CacheHitSidebarHost(props: {
         }
         timeline.handleMessage(sid, msg)
       }
+      if (!msg?.tokens && (!sid || sid === props.sessionId)) scheduleUsageRefresh()
     })
-    onCleanup(() => unsub?.())
+
+    // V2-specific finalised usage. The step event carries tokens/cost but not
+    // `model`, so patch the existing history row instead of replacing it.
+    const unsubUsage = props.api.event.on("message.usage", (event) => {
+      const info = event.properties as
+        | {
+            sessionID?: string
+            messageID?: string
+            tokens?: AssistantMessage["tokens"]
+            cost?: number
+            finish?: string
+            completed?: number
+          }
+        | undefined
+      if (!info?.messageID || info.sessionID !== props.sessionId) return
+      const patch: AssistantUsagePatch = {
+        messageID: info.messageID,
+        tokens: info.tokens,
+        cost: info.cost,
+        finish: info.finish,
+        completed: info.completed,
+      }
+      pendingUsageUpdates.set(patch.messageID, patch)
+      setHistoryMessages((messages) => applyUsagePatch(messages, patch))
+      bumpRefresh()
+    })
+
+    onCleanup(() => {
+      unsub?.()
+      unsubUsage?.()
+    })
   })
 
   createEffect(() => {

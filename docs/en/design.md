@@ -186,6 +186,8 @@ Implementation: `agents-view.tsx` calls `formatSubAgentLabel` + `modelRowColor`;
 
 `sidebar-host` subscribes to `message.updated` and bumps `refreshTick` so dependent memos recompute. Main metric totals prefer the DB-level `session.get` aggregate (complete, not capped); lineage buckets use direct history. Streaming speed and TTFT use the TUI mirror. Child totals use `session.get()` when available.
 
+On OpenCode 2, a row can enter history from `session.message.content.updated` before the turn carries tokens. The V2 adapter forwards `session.step.ended` / `session.step.failed` as `message.usage`, and `sidebar-host` also re-reads the last 50 messages from the API once streaming settles. Both patch the existing history row in place, so model/agent metadata is preserved and per-call Hit, lineage ratios, and cache TTL cannot stay pinned to an older turn.
+
 ### session.get() availability
 
 `session.get()` provides DB-level aggregates (not capped at 100 messages), but was added in [opencode#26644](https://github.com/anomalyco/opencode/pull/26644) (2026-05-12). Forks that split before this commit — including MiMo-Code — lack the method. The main metric path prefers the DB-level `session.get` aggregate; when it is absent or empty it requests direct session messages with a 10,000-message limit. If that request fails once the mirror has filled its 100-message cap, the source is marked `unavailable`; a returned history at the 10,000 limit is marked `capped`. The mirror itself contains at most the 100 most recent messages per call.

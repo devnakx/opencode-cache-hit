@@ -91,6 +91,28 @@ export function createV2Api(ctx: V2Context): V2Api {
   // refresh tick from `message.updated`, so an empty payload is the right signal.
   subscribe("session.usage.updated", () => emit("message.updated", { properties: {} }))
 
+  // `session.message.content.updated` snapshots a turn before it finishes, so
+  // rows that enter history from it have no tokens. Step events carry the
+  // finalised usage; forward it as a patch so per-call metrics and TTL do not
+  // freeze on the last token-bearing turn.
+  const emitStepUsage = (event: V2Event) => {
+    const sessionID = event.data?.sessionID ?? ""
+    const messageID = event.data?.assistantMessageID ?? ""
+    if (!sessionID || !messageID) return
+    emit("message.usage", {
+      properties: {
+        sessionID,
+        messageID,
+        tokens: event.data?.tokens,
+        cost: typeof event.data?.cost === "number" ? event.data.cost : undefined,
+        finish: typeof event.data?.finish === "string" ? event.data.finish : undefined,
+        completed: typeof event.created === "number" ? event.created : undefined,
+      },
+    })
+  }
+  subscribe("session.step.ended", emitStepUsage)
+  subscribe("session.step.failed", emitStepUsage)
+
   // Content events fire during streaming but only rewrite `content`: they carry
   // `messageID` and `content`, never `tokens`/`cost`/`time.completed`. Useful for
   // part timing and for picking up the live row mid-turn, but not a turn-end

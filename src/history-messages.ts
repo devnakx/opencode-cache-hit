@@ -4,6 +4,67 @@
  */
 import type { AssistantMessage } from "./types.ts"
 
+export type AssistantUsagePatch = {
+  messageID: string
+  tokens?: AssistantMessage["tokens"]
+  cost?: number
+  finish?: string
+  completed?: number
+}
+
+/** A finalised row carries billable usage when any token bucket or cost is non-zero. */
+export function hasMessageUsage(message: AssistantMessage): boolean {
+  const tokens = message.tokens
+  if (
+    tokens &&
+    ((tokens.input ?? 0) > 0 ||
+      (tokens.output ?? 0) > 0 ||
+      (tokens.reasoning ?? 0) > 0 ||
+      (tokens.cache?.read ?? 0) > 0 ||
+      (tokens.cache?.write ?? 0) > 0)
+  ) {
+    return true
+  }
+  return (message.cost ?? 0) > 0
+}
+
+/**
+ * Fill finalised usage onto an existing row without dropping its model, agent,
+ * or content. V2 step events carry tokens/cost but not the message metadata, so
+ * replacing the whole row would lose the lineage key.
+ */
+export function applyUsagePatch(
+  messages: readonly AssistantMessage[],
+  patch: AssistantUsagePatch,
+): AssistantMessage[] {
+  const index = messages.findIndex(
+    (message) => (message.id ?? message.messageID) === patch.messageID,
+  )
+  if (index < 0) return messages as AssistantMessage[]
+
+  const current = messages[index]!
+  const tokens = patch.tokens ?? current.tokens
+  const cost = patch.cost ?? current.cost
+  const finish = patch.finish ?? current.finish
+  const time =
+    current.time?.completed === undefined && patch.completed !== undefined
+      ? { ...(current.time ?? { created: 0 }), completed: patch.completed }
+      : current.time
+
+  if (
+    tokens === current.tokens &&
+    cost === current.cost &&
+    finish === current.finish &&
+    time === current.time
+  ) {
+    return messages as AssistantMessage[]
+  }
+
+  const next = [...messages]
+  next[index] = { ...current, tokens, cost, finish, time }
+  return next
+}
+
 export const mergeHistoryMessage = (
   messages: readonly AssistantMessage[],
   update: AssistantMessage,
@@ -11,8 +72,20 @@ export const mergeHistoryMessage = (
   const id = update.id ?? update.messageID
   const next = [...messages]
   const index = id ? next.findIndex((message) => (message.id ?? message.messageID) === id) : -1
-  if (index >= 0) next[index] = update
-  else next.push(update)
+  if (index >= 0) {
+    const existing = next[index]!
+    const existingDone = existing.time?.completed !== undefined
+    const updateDone = update.time?.completed !== undefined
+    // A content snapshot can arrive after the turn was finalised; never let it
+    // drop completion or the usage already patched onto the row.
+    if (existingDone && !updateDone) return messages as AssistantMessage[]
+    next[index] =
+      existingDone && updateDone && !hasMessageUsage(update) && hasMessageUsage(existing)
+        ? { ...update, tokens: existing.tokens, cost: existing.cost }
+        : update
+  } else {
+    next.push(update)
+  }
   next.sort((a, b) => (a.time?.created ?? 0) - (b.time?.created ?? 0))
   return next
 }
@@ -59,6 +132,13 @@ export function syncLiveMessages(
     // A streaming snapshot never regresses a finalised row.
     if (existingDone && !incomingDone) continue
     if (!existingDone && incomingDone) {
+      next ??= [...history]
+      next[at] = message
+      continue
+    }
+    // A row finalised by an early content snapshot may still lack tokens; fill
+    // that in once the store reports the finished usage for the same turn.
+    if (existingDone && !hasMessageUsage(existing) && hasMessageUsage(message)) {
       next ??= [...history]
       next[at] = message
     }
